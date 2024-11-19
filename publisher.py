@@ -1,7 +1,8 @@
-import asyncio
 import json
 import yfinance as yf
 from nats.aio.client import Client as NATS
+import asyncio
+import psycopg2
 
 def fetch_live_data(symbols):
     """
@@ -10,36 +11,67 @@ def fetch_live_data(symbols):
     data = {}
     for symbol in symbols:
         ticker = yf.Ticker(symbol)
-        info = ticker.history(period="1d", interval="1m").tail(1)
+        info = ticker.history(period="1d", interval="1d").tail(1)  # Fetch 1 day's data
         if not info.empty:
             data[symbol] = {
-                "price": float(info["Close"].iloc[-1]),  # Convert np.float64 to Python float
-                "timestamp": info.index[-1].isoformat()
+                "price": float(info["Close"].iloc[-1]),  # Closing price
+                "timestamp": info.index[-1].isoformat()  # Date of the data
             }
     return data
 
-async def publish_data():
+async def publish_daily_data():
     """
-    Connect to the NATS server and continuously publish stock data.
+    Connect to the public NATS server, publish stock data once, and exit.
     """
     nc = NATS()
-    await nc.connect("nats://localhost:4222")  # Connect to the Dockerized NATS
+    await nc.connect("nats://demo.nats.io:4222")  # Public NATS server
 
-    symbols = ["AAPL", "GOOGL", "MSFT"]  # Replace with desired stock symbols
-    while True:
-        # Fetch data from Yahoo Finance
-        data = fetch_live_data(symbols)
-        for symbol, details in data.items():
-            # Serialize data to JSON string
-            message = json.dumps({
-                "symbol": symbol,
-                "price": details["price"],
-                "timestamp": details["timestamp"]
-            })
-            await nc.publish("stocks.live", message.encode())
-            print(f"Published: {message}")
+    symbols = ["AAPL", "GOOGL", "MSFT"]  # Replace with your desired stock symbols
+    data = fetch_live_data(symbols)
+    for symbol, details in data.items():
+        message = json.dumps({
+            "symbol": symbol,
+            "price": details["price"],
+            "timestamp": details["timestamp"]
+        })
+        await nc.publish("stocks.live", message.encode())
+        print(f"Published: {message}")
 
-        # Wait for 1 minute before the next fetch
-        await asyncio.sleep(60)
+    await nc.close()
 
-asyncio.run(publish_data())
+async def update_postgres():
+    """
+    Insert stock data into PostgreSQL cloud database.
+    """
+    # Connect to cloud-hosted PostgreSQL database
+    conn = psycopg2.connect(
+        dbname="datab",
+        user="shree",
+        password="desai123",
+        host="localhost",  # Replace with your PostgreSQL cloud host
+        port="5432"
+    )
+    cursor = conn.cursor()
+
+    symbols = ["AAPL", "GOOGL", "MSFT"]
+    data = fetch_live_data(symbols)
+    for symbol, details in data.items():
+        cursor.execute(
+            """
+            INSERT INTO stocks.stock_data_new (date, close, ticker)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (ticker, date) DO NOTHING
+            """,
+            (details["timestamp"][:10], details["price"], symbol)
+        )
+        conn.commit()
+        print(f"Inserted: {symbol} - {details['price']}")
+
+    conn.close()
+
+# Run both publishing to NATS and updating PostgreSQL
+async def main():
+    await publish_daily_data()
+    await update_postgres()
+
+asyncio.run(main())
