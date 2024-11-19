@@ -3,7 +3,7 @@ name: Publish Stocks Data
 on:
   schedule:
     # Schedule this workflow to run daily at midnight UTC
-    - cron: "0 12 * * *"
+    - cron: "0 1 * * *"
 
 jobs:
   publish:
